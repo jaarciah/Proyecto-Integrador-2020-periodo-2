@@ -1,0 +1,403 @@
+---
+title: "Proyecto Integrador Regresión Hurto Motos"
+author: Daian Paola Fajardo Becerra, Carlos Enrique Salazar Escobar,Hernan Sepulveda
+  Jimenez, Jesus Alberto Arcia Hernandez
+date: "11/17/2020"
+output:
+  html_document: default
+  word_document: default
+  pdf_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Objetivo
+
+Caracterizar las relaciones entre algunas variables geográficas y de tiempo con la cantidad de hurto de motos en la ciudad de medellín.
+
+## Instalamos las librerias que se utilizarán
+
+```{r,echo=FALSE}
+#packages <- c("readxl", "plotly", "tidyverse", "scales",'reshape2','Matrix','robustbase')
+#install.packages(packages,dependencies = T)
+#install.packages("lme4",
+#repos=c("http://lme4.r-forge.r-project.org/repos",
+#getOption("repos")[["CRAN"]]))
+#library('lme4')
+#library('beepr')
+```
+
+# Cargamos las librerías que se utilizarán
+
+```{r,message=FALSE, warning=FALSE}
+library(ggplot2)    # Es un paquete de visualización de datos.
+#library(readxl)     # Es un paquete para cargar archivos de excel.
+library(plotly)     # Es un paquete de visualización interactivo de datos.
+library(dplyr)      # Es un paquete de manipulación de datos.
+library(reshape2)   # Es un paquete para transformar datos entre formatos cortos y largos.
+#library(lme4)       # Es un paquete para ajustar modelos lineales y lineales de efectos mixtos generalizados.
+library(robustbase) # Es un paquete de herramientas que permiten analizar datos con métodos robustos.
+library(knitr)      # Es un motor para generar reportes dinámicos.
+library(kableExtra) # Es un paquete para crear tablas complejas de HTML o 'LaTeX'.
+library(lattice)    # Es un paquete que mejora los gráficos de la base R.
+#library(lmerTest)   # Es un paquete que proporciona valores p en anova de tipo I, II o III.
+#library(broom.mixed)# Es un paquete que ayuda a convertir la informacion de los modelos mixtos en dataframes.
+library(broom)
+library(beepr)
+```
+
+# Cargamos los datos de hurto de motos y su archivo espejo dummizado.
+
+```{r}
+
+hurtos_moto<-read.csv("https://raw.githubusercontent.com/jaarciah/Proyecto-Integrador-2020-periodo-2/master/Data/Preprocessing/hurto_motos_categorias_ingCaracteristicas.csv", sep=";")
+hurto_preprocesado<-read.csv("https://raw.githubusercontent.com/jaarciah/Proyecto-Integrador-2020-periodo-2/master/Data/Preprocessing/hurto_motos_dummy_Kmedoids50_100.csv", sep=",")
+
+
+```
+
+# Preparación de los datos
+
+```{r}
+
+## Guardamos los dataframes con nuevos nombres
+
+dfbase <- hurtos_moto
+df <- hurto_preprocesado
+
+## Creamos una columna combinando año y mes
+dfbase$anhomes <- dfbase$anho*100+dfbase$mes
+df$anhomes <- df$anho*100+df$mes
+
+## Creamos una columna combinando año y semana
+dfbase$anhosemana <- dfbase$anho*100+dfbase$week_number
+df$anhosemana <- df$anho*100+df$week_number
+
+
+## Creamos una columna de fecha
+dfbase$fecha <- as.Date(with(dfbase, paste(anho, mes, dia,sep="-")),
+           "%Y-%m-%d ") 
+df$fecha <- as.Date(with(df, paste(anho, mes, dia,sep="-")),
+           "%Y-%m-%d ") 
+
+## Creamos una columna de cantidad
+dfbase$cantidad <- 1
+df$cantidad <- 1
+
+## Revisamos los dataframes
+
+head(dfbase)
+head(df)
+
+print(summary(df))
+print(cols<-paste(colnames(df),collapse=","))
+```
+
+# Definición de las variables de inicialización de los modelos 
+
+```{r}
+                     #### DEFINICIÓN DE LAS VARIABLES DE CONFORMACIÓN DE LOS MODELOS
+
+cols2timeficate <- c('anhomes')         # se escoje una solo variable de tiempo de predicción, ya sea fecha o similar
+              
+cols2zonificate <- c('nombre_barrio')   # Colocar una sólo una variable de geoposición que sea o barrio_nombre o CLUSTERn
+                                        
+cols2factorizate <- c('franja_horaria') # Ahora se escogen varias variables factores diferentes a la definida como variable tiempo y variable zona
+
+fecha_minima <- "2000-01-01"            # Mínima fecha utilizada para filtrar el dataframe
+fecha_test <- "2018-12-31"              # Fecha a partir de la cual se testea el modelo
+cantidad_minima <- 20                   # Mínima cantidad de hurtos por barrio o cuadrante aceptados para crear modelo
+max_resid_perc <- 0.08                  # Porcentaje máximo de eliminación de residuales en el barrio o cuadrante
+acepted_r2 <- 0.75                      # Porcentaje por encima del cual ya no se eliminan más residuales
+minmaxiter <- 4                         # Si la cantidad de residuales a eliminar es menor que este valor no se elimina                                                                            ninguno
+```
+
+# Conformación del Dataframe de trabajo consolidado por las variables factores
+
+```{r}
+## Creamos algunos vectores de nombres de columnas
+df$tiempo <- df[,cols2timeficate]
+cols2consolidate <- c(cols2zonificate,cols2factorizate)
+xx <- cols2consolidate[-which(cols2consolidate %in% cols2zonificate)]
+xxplus <- paste('+',paste(xx,collapse = "+"))
+# Cálculo del dataset agregado por tiempo, y factores sumando cantidad
+dftrain <-  df[which(df$fecha > fecha_minima & df$fecha < fecha_test),]
+dftest <- df[which(df$fecha >= fecha_test),]
+dfconsolid <- aggregate(dftrain[c('cantidad')], by=dftrain[c('tiempo',cols2consolidate)], FUN=sum)
+```
+
+### Modelo de regresión simple
+
+ ```{r, warning=FALSE, message=FALSE}
+
+# Modelnames<-c()
+# zona <- c(237)
+# for (i in zona){
+#     # Se filtra el dataframe consolidado por el barrio o cuadrante seleccionado
+#     dffiltered = dfconsolid[dfconsolid[,2] == i,]
+#     # Se crea la fórmula glm y se corre el modelo
+#     formulalm <- formula(paste("cantidad ~ tiempo  ", noquote(xxplus)))
+#     assign(paste0('modelm_',i),lm(formulalm,data=dffiltered))
+#     # Se guarda el nombre del modelo en un vector
+#     Modelnames=append(Modelnames,paste0('modelm_',i))
+#     cat(paste('   Modelo de regresión lineal para la zona No',i,'  '),"\n","\n")
+#     summ_ml<-summary(eval(parse(text =paste0('modelm_',i))))
+#     cat('R2adj= ',summ_ml$adj.r.squared,"\n")
+#     print(summ_ml)
+#     fstat <- summ_ml$fstatistic
+#     fstat[fstat == 'NULL'] <- NA
+#     modelpvalue = pf(fstat[1], fstat[2], fstat[3], lower.tail=FALSE)
+#     cat('R2.Adj = ',summ_ml$adj.r.squared,'      p-value según fórmula =', modelpvalue, '\n')
+# }
+```
+
+
+### Modelo de regresión eliminando residuales altos y variables no significantes creando dataframe de resultados
+
+```{r, warning=FALSE, message=FALSE}
+zona <- c(unique(dftrain[,cols2zonificate]))
+#zona <- c(1:300)
+Modelnames<-c()
+resultszone <- c()
+resultsname <- c()
+resultsR2 <- c()
+resultspval <- c()
+resultsfact <- c()
+datafinal <- c()
+'%notin%' <- Negate('%in%')
+for (i in zona){
+  #cat(paste('        ####    Modelo de regresión lineal para el barrio o cuadrante No   ',i,'   ###'),"\n","\n")
+  dffiltered = dfconsolid[dfconsolid[,2] == i , ]
+  if (nrow(dffiltered) > cantidad_minima){
+      factors <- xx
+      if (length(factors)>0){  
+      factorsplus <- paste('+',paste(factors,collapse = "+"))
+      }
+      else { factorsplus <- ""
+      }
+      maxiter <- floor(nrow(dffiltered)*max_resid_perc)
+      iteraciones <- (1:maxiter)
+      NoResidOut <- 0 
+      
+        # Loop para eliminar residuales extremos
+        for (val in iteraciones) {
+          formulalm <- formula(paste("cantidad ~ tiempo  ", noquote(factorsplus)))
+          #assign(paste0('modelm_',i),lm(formulalm,data=dffiltered))
+          assign(paste0('modelm_',i),lm(paste("cantidad ~ tiempo ", noquote(factorsplus)),data=dffiltered))
+          summ_ml<-summary(eval(parse(text =paste0('modelm_',i))))
+          summ_ml$adj.r.squared[summ_ml$adj.r.squared == 'NaN'] <- 0
+          
+            if (summ_ml$adj.r.squared>acepted_r2 | maxiter < minmaxiter) {
+              #print ('encontró un máximo')
+              break
+            }
+            else {
+              residuales <- sort(abs(eval(parse(text=paste0('modelm_',i)))$residuals), decreasing = TRUE)
+              indice <- as.integer(rownames(data.frame(residuales[c(1)])))
+              dffiltered = dffiltered[-which(rownames(dffiltered) %in% indice),]
+              NoResidOut<-NoResidOut+1
+            }
+        }
+        #cat( 'Número de residuales desechados',NoResidOut,' de ',maxiter,' que se esperaba desechar','\n')
+        #cat( 'Modelo de la forma cantidad ~ tiempo',xxplus,'\n')
+        fstat <- summ_ml$fstatistic
+        fstat[fstat == 'NULL'] <- NA
+        modelpvalue = pf(fstat[1], fstat[2], fstat[3], lower.tail=FALSE)
+        #cat('R2.Adj = ',summ_ml$adj.r.squared,'      p-value según fórmula =', modelpvalue, '\n')
+        #print(summ_ml$coefficients);cat('\n','\n') 
+        Modelnames=append(Modelnames,paste0('modelm_',i))
+        
+        # Loop para eliminar factores no significantes
+        for (g in factors) {
+        
+          # Cálculo del nombre y valor del p value mayor superior a 0.05 excepto para intercepto y tiempo
+          maxpvalue <- max(summ_ml$coefficients[,4])
+          maxpvaluename <- names(which.max(summ_ml$coefficients[,4]))                  
+          
+            # Se elimina el mayor factor con pvalue > 0.05 que no sea intercepto ni tiempo
+            if (!is.null(maxpvaluename) && maxpvalue > 0.05 && maxpvaluename %notin% c('(Intercept)','tiempo')) {
+                factors <- factors[-which(factors == maxpvaluename )]
+                if (length(factors)>0){  
+                factorsplus <- paste('+',paste(factors,collapse = "+"))
+                }
+                else { factorsplus <- ""
+                }
+                formulalm <- formula(paste("cantidad ~ tiempo  ", noquote(factorsplus)))
+                assign(paste0('modelm_',i),lm(paste("cantidad ~ tiempo ", noquote(factorsplus)),data=dffiltered))
+                summ_ml<-summary(eval(parse(text =paste0('modelm_',i))))
+                    
+            }
+            else {
+                break
+            }  
+          #cat( 'Nuevo modelo de la forma cantidad ~ tiempo',factorsplus,'\n')
+          fstat <- summ_ml$fstatistic
+          fstat[fstat == 'NULL'] <- NA
+          modelpvalue = pf(fstat[1], fstat[2], fstat[3], lower.tail=FALSE)
+          #cat('R2.Adj = ',summ_ml$adj.r.squared,'      p-value según fórmula =', modelpvalue, '\n')
+          #print(summ_ml$coefficients);cat('\n','\n')
+          Modelnames=append(Modelnames,paste0('modelm_',i))
+        }
+  }
+  else {
+        factors = xx
+        if (length(factors)>0){  
+        factorsplus <- paste('+',paste(factors,collapse = "+"))
+        }
+        else { factorsplus <- ""
+        }
+    
+        formulalm <- formula(paste("cantidad ~ tiempo", noquote(factorsplus)))
+        assign(paste0('modelm_',i),lm(paste("cantidad ~ tiempo ", noquote(factorsplus)),data=dffiltered))
+        summ_ml<-summary(eval(parse(text =paste0('modelm_',i))))
+        NoResidOut<-0
+        maxiter <- floor(nrow(dffiltered)*max_resid_perc)
+    
+  }
+    
+modelname <- paste0('modelm_',i)                                   # Se guarda el modelname
+r2adj <- summ_ml$adj.r.squared                                 # Se guarda el R2adjust
+factnames <- paste(names(summ_ml$coefficients[,4]),collapse = ",") # Se guarda el factors
+data.frame("modelname"=modelname,"R2adjust"=r2adj,"pvalue"=99.99,"factors"='inicio',stringsAsFactors = FALSE)
+
+resultszone <- append(resultszone,i)
+resultsname <- append(resultsname,modelname)
+resultsR2 <- append(resultsR2,r2adj)
+resultspval <- append(resultspval,modelpvalue)
+resultsfact <- append(resultsfact,factnames)
+
+}
+
+datafinal <- data.frame(resultszone,resultsname,resultsR2,resultspval,resultsfact)
+#datafinal <- data.frame(resultszone,resultsname,resultsR2)
+View(datafinal)
+R2prom = mean(datafinal[,'resultsR2'],na.rm = TRUE)
+
+filename <- gsub(" ", "",paste('C:/EafitDatos/PI20202/RegressionResults/','models_',noquote(cols2zonificate),noquote(cols2timeficate),
+                               noquote(paste(cols2factorizate,collapse ='_')),'.csv'))
+write.csv(datafinal,filename, row.names = FALSE)
+
+
+```
+
+
+### Proyección de resultados
+
+
+```{r}
+  # Cálculo del dataset de testeo  agregado por tiempo, y factores sumando cantidad
+dfconsolidtest <-  aggregate(dftest[c('cantidad')], by=dftest[c('tiempo',cols2consolidate)], FUN=sum)
+  # Cálculo de las zonas con cantidad superior a cantidad_minima
+dfcantbyzonetest <- aggregate(dfconsolidtest[c('cantidad')], by=dfconsolidtest[cols2zonificate], FUN=sum)
+#zona <- dfcantbyzonetest[which (dfcantbyzonetest$cantidad > cantidad_minima),][,1]
+zona <- c(unique(dftest[,cols2zonificate]))
+#zona <- c(60)
+  # Se inicializan algunas variables para guardar los resultados
+totalresidualtest <- c()        # Inicializa el dataframe en el que se guardarán los resultados
+resultestzone <- c()            # Guarda la identificación de la zona usada en zonificate
+resultesttime <- c()            # Guarda la identificación de la variable tiempo en timeficate
+resultest1sthfactor <- c()      # Guardaa la identificación del primer factor en factorizate
+resultestR2adjtrain <- c()       # Guarda el R cuadrado ajustado del modelo utilizado en el entrenamiento
+resultestzonemse <- c()         # Guarda el error cuadrático medio de la zona
+resultestmsetotal <- c()        # Guarda el error cuadrático medio de la simulación total
+resultestname <- c()            # Guarda el nombre del modelo utilizado
+resultestnumobserv <- c()       # Guarda el número de observaciones del modelo
+resultestYreal <- c()           # Guarda el valor de la cantidad de hurtos en la tiempo y zona determinada
+resultestYhat <- c()            # Guarda el valor de la cantidad predecida de hurtos en la tiempo y zona determinada
+resultestmaxYhat <- c()        # Guarda el máximo valor de todas las cantidades estimadas
+resultestYhatIndx <- c()        # Guarda el la cantidad estimada dividido el percentil 95 de todas las cantidades estimadas
+
+  # Loop para hacer la proyección de cada modelo por zona y calcular Y estimada y Y real
+residualstest = c()
+for (i in zona) {
+  cat(paste('Localización No   ',i,'   ###'))
+  dffilteredtest <- dfconsolidtest[dfconsolidtest[,2] == i, ]
+  predict_mltest <- predict(eval(parse(text =paste0('modelm_',i))),dffilteredtest)
+  #residualtest = dffilteredtest$cantidad-predict_mltest
+  mse <- mean((dffilteredtest$cantidad - predict_mltest)^2,na.rm = TRUE)
+  cat(' error cuadratico medio =', mse,'\n') 
+  resultestzone <- append(resultestzone,rep(i,length(dffilteredtest$cantidad)))
+  resultesttime <- append(resultesttime,dffilteredtest[,1])
+  resultest1sthfactor <- append(resultest1sthfactor,dffilteredtest[,cols2factorizate[1]])
+  resultestR2adjtrain <- append(resultestR2adjtrain,rep(datafinal[which(datafinal$resultszone== i),]$resultsR2,length(dffilteredtest$cantidad)))
+  resultestzonemse <- append(resultestzonemse,rep(mse,length(dffilteredtest$cantidad))) 
+  resultestnumobserv <- append(resultestnumobserv,rep(length(dffilteredtest$cantidad),length(dffilteredtest$cantidad))) 
+  resultestYreal <- append(resultestYreal, dffilteredtest$cantidad)
+  resultestYhat <- append(resultestYhat, predict_mltest)
+
+  }
+cat('Error cuadrático medio total' = msetotal <- mean(( resultestYreal - resultestYhat)^2,na.rm = TRUE))
+resultestmsetotal <- append(resultestmsetotal,rep(mse,length(resultestYreal))) 
+resultestmaxYhat <- max(resultestYhat)
+resultestYhatIndx <- resultestYhat/resultestmaxYhat
+totalresidualtest <-data.frame(resultestzone,resultesttime,resultest1sthfactor,resultestnumobserv,resultestzonemse,resultestmsetotal,
+                               resultestYreal,resultestYhat,resultestYhatIndx,resultestR2adjtrain)
+filename <- gsub(" ", "",paste('C:/EafitDatos/PI20202/RegressionResults/','predictions_',noquote(cols2zonificate),noquote(cols2timeficate)
+                               ,noquote(paste(cols2factorizate,collapse ='_')),'.csv'))
+write.csv(totalresidualtest,filename, row.names = FALSE)
+
+View(totalresidualtest)
+```
+
+### Proyección de todas las posibles combinaciones de tiempo, lugar y factores
+
+
+```{r}
+
+# Se crean todas las posibles combinaciones de la variable de tiempo (anho_mes) con la clasificadora (nombre_barrio) y los factores (franja_horaria)
+
+x <- (unique(df[which(df$fecha > fecha_test),][,'anhomes']))
+y <- unique(df$nombre_barrio)
+z <- unique(df$franja_horaria)
+dfpredict <- expand.grid(x, y, z)
+names(dfpredict)[names(dfpredict) == 'Var1'] <- 'tiempo'
+names(dfpredict)[names(dfpredict) == 'Var2'] <- 'nombre_barrio'
+names(dfpredict)[names(dfpredict) == 'Var3'] <- 'franja_horaria'
+dfpredict$cantidad <- 0
+dfpredict
+```
+
+
+
+```{r}
+  # Cálculo del dataset de testeo  agregado por tiempo, y factores sumando cantidad
+# Se calculó en el chunk anterior como dfpredict
+ zona <- c(unique(dftest[,cols2zonificate]))
+# zona <- c(60)
+  # Se inicializan algunas variables para guardar los resultados
+totalresidualtest <- c()                # Inicializa el dataframe en el que se guardarán los resultados
+resulpredzone <- c()                    # Guarda la identificación de la zona usada en zonificate
+resulpredtime <- c()                    # Guarda la identificación de la variable tiempo en timeficate
+resulpred1sthfactor <- c()              # Guardaa la identificación del primer factor en factorizate
+resulpredYhat <- c()
+resulpredmaxYhat <- resultestmaxYhat    # Guarda el máximo valor de todas las cantidades estimadas
+resulpredYhatIndx <- c()                # Guarda el la cantidad estimada dividido el percentil 95 de todas las cantidades estimadas
+
+  # Loop para hacer la proyección de cada modelo por zona y calcular Y estimada y Y real
+residualstest = c()
+for (i in zona) {
+
+  dffilteredpred <- dfpredict[dfconsolidtest[,2] == i, ]
+  predict_mlpred <- predict(eval(parse(text =paste0('modelm_',i))),dffilteredpred)
+
+
+  resulpredzone <- append(resulpredzone,rep(i,length(dffilteredpred$cantidad)))
+  resulpredtime <- append(resulpredtime,dffilteredpred[,1])
+  resulpred1sthfactor <- append(resulpred1sthfactor,dffilteredpred[,cols2factorizate[1]])
+  #resulpredR2adjtrain <- append(resulpredR2adjtrain,rep(datafinal[which(datafinal$resultszone== i),]$resultsR2,length(dffilteredpred$cantidad)))
+  resulpredYhat <- append(resulpredYhat, predict_mlpred)
+  View(resulpredYhat)
+  View(predict_mlpred)
+  }
+
+resulpredYhatIndx <- resulpredYhat/resulpredmaxYhat
+predictions <-data.frame(resulpredzone,resulpredtime,resulpred1sthfactor,resulpredYhat,resulpredYhatIndx)
+filename <- gsub(" ", "",paste('C:/EafitDatos/PI20202/RegressionResults/','finalpredictions_',noquote(cols2zonificate),noquote(cols2timeficate)
+                               ,noquote(paste(cols2factorizate,collapse ='_')),'.csv'))
+write.csv(predictions,filename, row.names = FALSE)
+
+View(predictions)
+```
+
